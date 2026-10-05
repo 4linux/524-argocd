@@ -1,0 +1,53 @@
+# ci-tools: Gitea ja instalado, com Docker pronto para o runner do
+# Gitea Actions e o Selenium, que sao criados em aula.
+- hosts: all
+  become: true
+  vars_files: [vars.yaml]
+  tasks:
+    - ansible.builtin.import_tasks: tasks/common.yaml
+    - ansible.builtin.import_tasks: tasks/docker.yaml
+
+    - name: Diretorio do Gitea
+      ansible.builtin.file:
+        path: /opt/gitea/data
+        state: directory
+        owner: "1000"
+        group: "1000"
+        mode: "0755"
+
+    - name: Compose do Gitea
+      ansible.builtin.template:
+        src: templates/gitea-compose.yaml.j2
+        dest: /opt/gitea/docker-compose.yaml
+        mode: "0644"
+
+    - name: Sobe o Gitea
+      ansible.builtin.command: docker compose up -d
+      args:
+        chdir: /opt/gitea
+      register: gitea_up
+      changed_when: "'Started' in gitea_up.stderr or 'Created' in gitea_up.stderr"
+
+    - name: Aguarda o Gitea responder
+      ansible.builtin.uri:
+        url: http://localhost:3000/api/healthz
+      register: gitea_health
+      retries: 30
+      delay: 4
+      until: gitea_health.status == 200
+
+    - name: Usuarios existentes no Gitea
+      ansible.builtin.command: docker exec -u git gitea gitea admin user list
+      register: gitea_users
+      changed_when: false
+
+    - name: Usuario administrador do Gitea
+      ansible.builtin.command: >
+        docker exec -u git gitea gitea admin user create --admin
+        --username {{ gitea_admin_user }}
+        --password {{ gitea_admin_password }}
+        --email {{ gitea_admin_email }}
+        --must-change-password=false
+      when: >-
+        gitea_users.stdout is not
+        regex('^\d+\s+' ~ gitea_admin_user ~ '\s', multiline=true)

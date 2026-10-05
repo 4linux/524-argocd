@@ -1,0 +1,110 @@
+# k3s: cluster Kubernetes onde rodam o Argo CD, o SonarQube e a aplicacao.
+- hosts: all
+  become: true
+  vars_files: [vars.yaml]
+  tasks:
+    - ansible.builtin.import_tasks: tasks/common.yaml
+
+    - name: Limites exigidos pelo SonarQube (Elasticsearch embutido)
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-sonarqube.conf
+        reload: true
+      loop:
+        - { name: vm.max_map_count, value: "524288" }
+        - { name: fs.file-max, value: "131072" }
+
+    - name: Diretorio de configuracao do k3s
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: "0755"
+
+    - name: Nexus como registry sem TLS para o containerd
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        content: |
+          mirrors:
+            "{{ nexus_registry }}":
+              endpoint:
+                - "http://{{ nexus_registry }}"
+        mode: "0644"
+      register: registries
+
+    - name: Verifica se o k3s ja esta instalado
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_bin
+
+    - name: Instala o k3s (Traefik incluso como Ingress Controller)
+      ansible.builtin.shell: >
+        curl -sfL https://get.k3s.io |
+        INSTALL_K3S_VERSION="{{ k3s_version }}" sh -s - server
+        --node-ip {{ k3s_node_ip }}
+        --write-kubeconfig-mode 644
+      when: not k3s_bin.stat.exists
+
+    - name: Reinicia o k3s se o registries.yaml mudou depois da instalacao
+      ansible.builtin.systemd_service:
+        name: k3s
+        state: restarted
+      when: registries.changed and k3s_bin.stat.exists
+
+    - name: Aguarda o node ficar Ready
+      ansible.builtin.command: >
+        k3s kubectl wait --for=condition=Ready node/k3s --timeout=180s
+      register: node_ready
+      retries: 10
+      delay: 10
+      until: node_ready.rc == 0
+      changed_when: false
+
+    - name: Diretorio .kube do usuario vagrant
+      ansible.builtin.file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: "0755"
+
+    - name: Kubeconfig para o usuario vagrant
+      ansible.builtin.copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/vagrant/.kube/config
+        remote_src: true
+        owner: vagrant
+        group: vagrant
+        mode: "0600"
+
+    - name: Helm
+      ansible.builtin.unarchive:
+        src: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        dest: /usr/local/bin
+        remote_src: true
+        extra_opts: [--strip-components=1, linux-amd64/helm]
+        creates: /usr/local/bin/helm
+
+    - name: Autocomplete e alias do kubectl
+      ansible.builtin.blockinfile:
+        path: /home/vagrant/.bashrc
+        marker: "# {mark} kubectl"
+        block: |
+          source <(kubectl completion bash)
+          alias k=kubectl
+          complete -o default -F __start_kubectl k
+
+    - name: Argo CD (opcional, variavel argocd_install)
+      when: argocd_install | bool
+      block:
+        - name: Namespace argocd
+          ansible.builtin.command: k3s kubectl create namespace argocd
+          register: ns
+          failed_when: ns.rc != 0 and 'AlreadyExists' not in ns.stderr
+          changed_when: ns.rc == 0
+
+        - name: Manifesto de instalacao do Argo CD
+          ansible.builtin.command: >
+            k3s kubectl apply -n argocd --server-side --force-conflicts
+            -f https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml
+          changed_when: true

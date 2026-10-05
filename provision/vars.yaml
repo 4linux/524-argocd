@@ -1,0 +1,28 @@
+# Enderecos do laboratorio
+lab_hosts:
+  - { ip: 192.168.88.10, name: ci-tools }
+  - { ip: 192.168.88.20, name: nexus }
+  - { ip: 192.168.88.30, name: k3s }
+
+k3s_node_ip: 192.168.88.30
+
+# Registry Docker do Nexus (repositorio docker-hosted criado em aula)
+nexus_registry: "192.168.88.20:8082"
+
+# Gitea (ja entregue instalado na ci-tools)
+gitea_host: 192.168.88.10
+gitea_admin_user: root
+gitea_admin_password: qwe123qwe
+gitea_admin_email: root@4labs.example
+gitea_secret_key: laboratorio-524-argocd-nao-usar-em-producao
+
+# Versoes
+gitea_version: "1.27.3"
+nexus_version: "3.96.4"
+k3s_version: "v1.36.5+k3s1"
+helm_version: "v4.3.0"
+argocd_version: "v3.5.3"
+
+# O Argo CD e o SonarQube sao instalados em aula, no k3s.
+# Mude para true para o provisionamento ja entregar o Argo CD instalado.
+argocd_install: false

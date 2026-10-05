@@ -1,0 +1,30 @@
+# nexus: Sonatype Nexus em Docker, registry das imagens da aplicacao.
+- hosts: all
+  become: true
+  vars_files: [vars.yaml]
+  tasks:
+    - ansible.builtin.import_tasks: tasks/common.yaml
+    - ansible.builtin.import_tasks: tasks/docker.yaml
+
+    - name: Diretorio de dados do Nexus (UID 200 da imagem)
+      ansible.builtin.file:
+        path: /nexus-data
+        state: directory
+        owner: "200"
+        group: "200"
+        mode: "0755"
+
+    - name: Container do Nexus
+      community.docker.docker_container:
+        name: nexus
+        image: "sonatype/nexus3:{{ nexus_version }}"
+        restart_policy: always
+        published_ports:
+          - "8081:8081"   # interface web
+          - "8082:8082"   # registry docker-hosted (criado em aula)
+          - "8083:8083"
+        volumes:
+          - /nexus-data:/nexus-data
+        env:
+          # Heap reduzido para caber no laboratorio
+          INSTALL4J_ADD_VM_PARAMS: "-Xms1g -Xmx1g -XX:MaxDirectMemorySize=1g"
