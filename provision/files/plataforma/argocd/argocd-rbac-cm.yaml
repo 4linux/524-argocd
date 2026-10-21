@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+data:
+  policy.csv: |
+    # O papel dev consulta e sincroniza as Applications do projeto curso
+    p, role:dev, applications, get, curso/*, allow
+    p, role:dev, applications, sync, curso/*, allow
+    p, role:dev, projects, get, curso, allow
+    # A conta dev recebe o papel dev
+    g, dev, role:dev

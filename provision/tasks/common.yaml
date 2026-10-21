@@ -1,0 +1,13 @@
+- name: Hosts do laboratorio no /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '\s{{ item.name }}$'
+    line: "{{ item.ip }} {{ item.name }}.4labs.example {{ item.name }}"
+  loop: "{{ lab_hosts }}"
+
+- name: Pacotes basicos
+  ansible.builtin.apt:
+    name: [ca-certificates, curl, git, vim, chrony, jq]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600

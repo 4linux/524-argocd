@@ -1,0 +1,211 @@
+# Etapa 8 - Testes funcionais em homologação
+#
+# Acrescenta o job que aguarda a nova versão em homologação e executa os testes funcionais com Selenium.
+# Pré-requisitos: Os mesmos da etapa anterior. Requer o Selenium Grid na máquina ci-tools.
+#
+# Uso: copie este arquivo para .gitea/workflows/ci.yml no repositório course-catalog.
+
+name: Course Catalog CI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: course_catalog
+  IMAGE_TAG: 0.${{ gitea.run_number }}
+  TRIVY_VERSION: 0.75.0
+  REGISTRY: 192.168.88.20:8082
+  DEPLOY_REPOSITORY: 192.168.88.10:3000/524/course-catalog-deploy.git
+  HOMOLOG_URL: http://homolog.192.168.88.30.nip.io
+  SELENIUM_URL: http://192.168.88.10:4444/wd/hub
+
+jobs:
+  testes:
+    name: Testes e qualidade
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Histórico completo: o SonarQube o utiliza para identificar o código novo
+          fetch-depth: 0
+
+      - name: Build da imagem de teste
+        run: docker build --target test -t ${IMAGE_NAME}:test-${IMAGE_TAG} .
+
+      - name: Testes unitários
+        run: docker run --name unit-${IMAGE_TAG} ${IMAGE_NAME}:test-${IMAGE_TAG}
+
+      - name: Coleta dos relatórios
+        if: always()
+        run: |
+          docker cp unit-${IMAGE_TAG}:/courseCatalog/reports .
+          # O relatório de cobertura foi gerado dentro do container, em /courseCatalog.
+          # Ajusta o caminho para o diretório de trabalho do job.
+          sed -i "s|/courseCatalog|${GITHUB_WORKSPACE}|g" reports/coverage.xml
+
+      - name: Publicação dos relatórios
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: relatorios-de-teste
+          path: reports/
+
+      - name: Análise no SonarQube
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=course-catalog
+            -Dsonar.sources=project
+            -Dsonar.tests=tests
+            -Dsonar.python.version=3.12
+            -Dsonar.python.coverage.reportPaths=reports/coverage.xml
+            -Dsonar.python.xunit.reportPath=reports/junit.xml
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=120
+
+      - name: Limpeza
+        if: always()
+        run: |
+          docker rm -f unit-${IMAGE_TAG} || true
+          docker image rm -f ${IMAGE_NAME}:test-${IMAGE_TAG} || true
+
+  build:
+    name: Build e push
+    runs-on: ubuntu-latest
+    needs: testes
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build da imagem
+        run: |
+          docker build --build-arg APP_VERSION=${IMAGE_TAG} \
+            -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .
+
+      - name: Análise de vulnerabilidades da imagem
+        run: |
+          # O arquivo de exceções é opcional no repositório
+          touch .trivyignore
+          docker create --name trivy-${IMAGE_TAG} \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/trivy \
+            aquasec/trivy:${TRIVY_VERSION} image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 \
+            --timeout 30m \
+            --ignorefile /.trivyignore \
+            ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+          docker cp .trivyignore trivy-${IMAGE_TAG}:/.trivyignore
+          docker start -a trivy-${IMAGE_TAG}
+
+      - name: Login no Nexus
+        env:
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          echo "${NEXUS_PASSWORD}" | docker login ${REGISTRY} \
+            -u "${NEXUS_USER}" --password-stdin
+
+      - name: Push para o Nexus
+        run: docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+
+      - name: Limpeza
+        if: always()
+        run: |
+          docker rm -f trivy-${IMAGE_TAG} || true
+          docker logout ${REGISTRY} || true
+          docker image rm -f ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} || true
+
+  deploy-homolog:
+    name: Deploy em homologação
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 5
+    steps:
+      - name: Nova tag no repositório de deploy
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          git clone http://root:${DEPLOY_TOKEN}@${DEPLOY_REPOSITORY} deploy
+          cd deploy
+          sed -i "s|newTag:.*|newTag: \"${IMAGE_TAG}\"|" overlays/homolog/kustomization.yaml
+          git config user.name "Gitea Actions"
+          git config user.email "actions@4labs.example"
+          # Em uma reexecução a tag já está correta: não há o que registrar
+          git diff --quiet || git commit -am "chore(homolog): course_catalog ${IMAGE_TAG}"
+          git push origin main
+
+  testes-funcionais:
+    name: Testes funcionais em homologação
+    runs-on: ubuntu-latest
+    needs: deploy-homolog
+    timeout-minutes: 15
+    steps:
+      - name: Aguardando a nova versão em homologação
+        run: |
+          # Quem aplica a versão é o Argo CD. O pipeline somente observa a
+          # aplicação até que ela responda com a versão desta execução.
+          for tentativa in $(seq 1 60); do
+            versao=$(curl -fsS ${HOMOLOG_URL}/health | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' || true)
+            echo "Tentativa ${tentativa}: versão em homologação = ${versao:-indisponível}"
+            if [ "${versao}" = "${IMAGE_TAG}" ]; then
+              curl -fsS ${HOMOLOG_URL}/ready
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "A versão ${IMAGE_TAG} não chegou em homologação no tempo esperado"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build da imagem de teste
+        run: docker build --target test -t ${IMAGE_NAME}:test-${IMAGE_TAG} .
+
+      - name: Testes funcionais
+        run: |
+          docker run --rm -e APP_URL=${HOMOLOG_URL} -e SELENIUM_URL \
+            ${IMAGE_NAME}:test-${IMAGE_TAG} python3 tests/functional/test_functional.py
+
+      - name: Limpeza
+        if: always()
+        run: docker image rm -f ${IMAGE_NAME}:test-${IMAGE_TAG} || true
+
+  notificacao:
+    name: Notificação
+    runs-on: ubuntu-latest
+    needs: [testes, build, deploy-homolog, testes-funcionais]
+    # Executa sempre, inclusive quando um dos jobs anteriores falha
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Resultado da pipeline
+        env:
+          NTFY_URL: ${{ vars.NTFY_URL }}
+          RESULTADOS: ${{ toJSON(needs) }}
+        run: |
+          if echo "${RESULTADOS}" | grep -qE '"result": "(failure|cancelled)"'; then
+            titulo="Falha na pipeline"
+            tags="x"
+            prioridade="high"
+          else
+            titulo="Pipeline concluída"
+            tags="white_check_mark"
+            prioridade="default"
+          fi
+          curl -fsS \
+            -H "Title: ${titulo}: ${GITHUB_REPOSITORY} ${IMAGE_TAG}" \
+            -H "Tags: ${tags}" \
+            -H "Priority: ${prioridade}" \
+            -H "Click: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -d "Branch ${GITHUB_REF_NAME}, commit ${GITHUB_SHA:0:7}, por ${GITHUB_ACTOR}." \
+            ${NTFY_URL}

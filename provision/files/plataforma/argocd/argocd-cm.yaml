@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+data:
+  # Conta local para o time de desenvolvimento, com acesso por login
+  accounts.dev: login

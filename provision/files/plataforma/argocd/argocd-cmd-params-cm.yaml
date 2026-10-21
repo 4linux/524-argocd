@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+data:
+  # O Argo CD atende em HTTP. O acesso externo passa pelo Traefik.
+  # Em um ambiente real o Ingress deve ter um certificado TLS.
+  server.insecure: "true"

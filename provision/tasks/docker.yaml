@@ -1,0 +1,60 @@
+- name: Diretorio de chaves do apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Chave do repositorio do Docker
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Repositorio do Docker
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+
+- name: Docker e plugins
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+      - python3-docker
+    state: present
+    update_cache: true
+
+- name: Nexus como registry sem TLS
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {
+        "insecure-registries": ["{{ nexus_registry }}"]
+      }
+    mode: "0644"
+  register: daemon_json
+
+- name: Reinicia o Docker se a configuracao mudou
+  ansible.builtin.systemd_service:
+    name: docker
+    state: restarted
+  when: daemon_json.changed
+
+- name: Docker habilitado
+  ansible.builtin.systemd_service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Usuario vagrant no grupo docker
+  ansible.builtin.user:
+    name: vagrant
+    groups: docker
+    append: true

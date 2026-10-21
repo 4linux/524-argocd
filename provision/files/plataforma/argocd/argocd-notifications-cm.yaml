@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+data:
+  # Endereço do Argo CD utilizado nos links das mensagens
+  context: |
+    argocdUrl: http://argocd.192.168.88.30.nip.io
+
+  # Serviço: para onde as notificações são enviadas
+  service.webhook.ntfy: |
+    url: http://192.168.88.10:8090
+    headers:
+      - name: Content-Type
+        value: application/json
+
+  # Modelos: o conteúdo de cada mensagem
+  template.app-deployed: |
+    webhook:
+      ntfy:
+        method: POST
+        body: |
+          {
+            "topic": "pipeline",
+            "title": "Deploy concluído: {{.app.metadata.name}}",
+            "message": "Sincronizada e saudável no namespace {{.app.spec.destination.namespace}}.{{with .app.status.sync.revision}} Commit {{. | trunc 7}}.{{end}}",
+            "tags": ["rocket"],
+            "click": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}"
+          }
+  template.app-sync-failed: |
+    webhook:
+      ntfy:
+        method: POST
+        body: |
+          {
+            "topic": "pipeline",
+            "title": "Falha no deploy: {{.app.metadata.name}}",
+            "message": "A sincronização falhou no namespace {{.app.spec.destination.namespace}}. Consulte o Argo CD.",
+            "tags": ["x"],
+            "priority": 4,
+            "click": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}"
+          }
+
+  # Gatilhos: quando enviar
+  trigger.on-deployed: |
+    - description: A aplicação foi sincronizada e está saudável
+      oncePer: app.status.operationState?.syncResult?.revision
+      send: [app-deployed]
+      when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+  trigger.on-sync-failed: |
+    - description: A sincronização falhou
+      send: [app-sync-failed]
+      when: app.status.operationState != nil and app.status.operationState.phase in ['Error', 'Failed']
+
+  # Assinatura padrão: vale para todas as Applications
+  subscriptions: |
+    - recipients:
+        - ntfy
+      triggers:
+        - on-deployed
+        - on-sync-failed

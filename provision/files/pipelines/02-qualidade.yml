@@ -1,0 +1,73 @@
+# Etapa 2 - Análise de qualidade
+#
+# Acrescenta a análise no SonarQube, com reprovação pelo Quality Gate.
+# Pré-requisitos: Secret SONAR_TOKEN e variable SONAR_HOST_URL.
+#
+# Uso: copie este arquivo para .gitea/workflows/ci.yml no repositório course-catalog.
+
+name: Course Catalog CI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: course_catalog
+  IMAGE_TAG: 0.${{ gitea.run_number }}
+
+jobs:
+  testes:
+    name: Testes e qualidade
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Histórico completo: o SonarQube o utiliza para identificar o código novo
+          fetch-depth: 0
+
+      - name: Build da imagem de teste
+        run: docker build --target test -t ${IMAGE_NAME}:test-${IMAGE_TAG} .
+
+      - name: Testes unitários
+        run: docker run --name unit-${IMAGE_TAG} ${IMAGE_NAME}:test-${IMAGE_TAG}
+
+      - name: Coleta dos relatórios
+        if: always()
+        run: |
+          docker cp unit-${IMAGE_TAG}:/courseCatalog/reports .
+          # O relatório de cobertura foi gerado dentro do container, em /courseCatalog.
+          # Ajusta o caminho para o diretório de trabalho do job.
+          sed -i "s|/courseCatalog|${GITHUB_WORKSPACE}|g" reports/coverage.xml
+
+      - name: Publicação dos relatórios
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: relatorios-de-teste
+          path: reports/
+
+      - name: Análise no SonarQube
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=course-catalog
+            -Dsonar.sources=project
+            -Dsonar.tests=tests
+            -Dsonar.python.version=3.12
+            -Dsonar.python.coverage.reportPaths=reports/coverage.xml
+            -Dsonar.python.xunit.reportPath=reports/junit.xml
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=120
+
+      - name: Limpeza
+        if: always()
+        run: |
+          docker rm -f unit-${IMAGE_TAG} || true
+          docker image rm -f ${IMAGE_NAME}:test-${IMAGE_TAG} || true

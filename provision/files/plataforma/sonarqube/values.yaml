@@ -1,0 +1,48 @@
+# SonarQube Community Build para o laboratório do curso 524
+# Chart: sonarqube/sonarqube (https://SonarSource.github.io/helm-chart-sonarqube)
+
+# Edição gratuita do SonarQube
+community:
+  enabled: true
+
+# Senha utilizada pelas verificações de saúde do próprio SonarQube.
+# Sem ela o pod nunca é considerado pronto.
+monitoringPasscode: "qwe123qwe"
+
+# Publicação pelo Traefik, o Ingress Controller do k3s
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  hosts:
+    - name: sonarqube.192.168.88.30.nip.io
+
+# Mantém os dados em um volume. O banco é o H2 embutido, adequado
+# somente para laboratório.
+persistence:
+  enabled: true
+  size: 5Gi
+
+# Os parâmetros de kernel exigidos pelo SonarQube já foram aplicados
+# no provisionamento da máquina k3s
+initSysctl:
+  enabled: false
+
+# Memória reduzida para caber no laboratório
+resources:
+  requests:
+    cpu: 200m
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 3Gi
+
+env:
+  - name: SONAR_WEB_JAVAOPTS
+    value: "-Xmx512m -Xms128m"
+  - name: SONAR_CE_JAVAOPTS
+    value: "-Xmx512m -Xms128m"
+  - name: SONAR_SEARCH_JAVAOPTS
+    value: "-Xmx512m -Xms512m"
+
+tests:
+  enabled: false

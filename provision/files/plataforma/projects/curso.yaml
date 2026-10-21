@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: curso
+  namespace: argocd
+spec:
+  description: Aplicações do curso
+  # De onde os manifests podem vir
+  sourceRepos:
+    - http://192.168.88.10:3000/524/*
+  # Para onde podem ir
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: estudo
+    - server: https://kubernetes.default.svc
+      namespace: homolog
+    - server: https://kubernetes.default.svc
+      namespace: production
+  # Objetos de cluster permitidos: somente a criação de namespaces
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace

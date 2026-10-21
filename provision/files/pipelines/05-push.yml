@@ -1,0 +1,122 @@
+# Etapa 5 - Push para o Nexus
+#
+# A imagem aprovada passa a ser enviada ao registry do Nexus.
+# Pré-requisitos: Os da etapa anterior e os secrets NEXUS_USER e NEXUS_PASSWORD.
+#
+# Uso: copie este arquivo para .gitea/workflows/ci.yml no repositório course-catalog.
+
+name: Course Catalog CI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: course_catalog
+  IMAGE_TAG: 0.${{ gitea.run_number }}
+  TRIVY_VERSION: 0.75.0
+  REGISTRY: 192.168.88.20:8082
+
+jobs:
+  testes:
+    name: Testes e qualidade
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Histórico completo: o SonarQube o utiliza para identificar o código novo
+          fetch-depth: 0
+
+      - name: Build da imagem de teste
+        run: docker build --target test -t ${IMAGE_NAME}:test-${IMAGE_TAG} .
+
+      - name: Testes unitários
+        run: docker run --name unit-${IMAGE_TAG} ${IMAGE_NAME}:test-${IMAGE_TAG}
+
+      - name: Coleta dos relatórios
+        if: always()
+        run: |
+          docker cp unit-${IMAGE_TAG}:/courseCatalog/reports .
+          # O relatório de cobertura foi gerado dentro do container, em /courseCatalog.
+          # Ajusta o caminho para o diretório de trabalho do job.
+          sed -i "s|/courseCatalog|${GITHUB_WORKSPACE}|g" reports/coverage.xml
+
+      - name: Publicação dos relatórios
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: relatorios-de-teste
+          path: reports/
+
+      - name: Análise no SonarQube
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=course-catalog
+            -Dsonar.sources=project
+            -Dsonar.tests=tests
+            -Dsonar.python.version=3.12
+            -Dsonar.python.coverage.reportPaths=reports/coverage.xml
+            -Dsonar.python.xunit.reportPath=reports/junit.xml
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=120
+
+      - name: Limpeza
+        if: always()
+        run: |
+          docker rm -f unit-${IMAGE_TAG} || true
+          docker image rm -f ${IMAGE_NAME}:test-${IMAGE_TAG} || true
+
+  build:
+    name: Build e push
+    runs-on: ubuntu-latest
+    needs: testes
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build da imagem
+        run: |
+          docker build --build-arg APP_VERSION=${IMAGE_TAG} \
+            -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .
+
+      - name: Análise de vulnerabilidades da imagem
+        run: |
+          # O arquivo de exceções é opcional no repositório
+          touch .trivyignore
+          docker create --name trivy-${IMAGE_TAG} \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/trivy \
+            aquasec/trivy:${TRIVY_VERSION} image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 \
+            --timeout 30m \
+            --ignorefile /.trivyignore \
+            ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+          docker cp .trivyignore trivy-${IMAGE_TAG}:/.trivyignore
+          docker start -a trivy-${IMAGE_TAG}
+
+      - name: Login no Nexus
+        env:
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          echo "${NEXUS_PASSWORD}" | docker login ${REGISTRY} \
+            -u "${NEXUS_USER}" --password-stdin
+
+      - name: Push para o Nexus
+        run: docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+
+      - name: Limpeza
+        if: always()
+        run: |
+          docker rm -f trivy-${IMAGE_TAG} || true
+          docker logout ${REGISTRY} || true
+          docker image rm -f ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} || true

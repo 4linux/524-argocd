@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: raiz
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.88.10:3000/524/plataforma.git
+    targetRevision: main
+    path: .
+    directory:
+      recurse: true
+      # Somente os projetos e as Applications. A instalação do Argo CD
+      # e os valores do SonarQube ficam de fora.
+      include: '{projects/*.yaml,apps/*.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
